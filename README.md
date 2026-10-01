@@ -34,7 +34,32 @@ python main.py --window         # standalone tkinter window instead of Rainmeter
 ```
 
 Then in Rainmeter: Manage > Refresh all, and load a `GameWidget` skin (Panel, Tabs or Minimal).
-Right-click a skin for *Refresh game data* / *Ask Claude*. Service log: `%APPDATA%\GameWidget\service.log`.
+Right-click a skin for *Refresh game data* / *Ask Claude* / *Edit appearance*. Service log: `%APPDATA%\GameWidget\service.log`.
+
+**In the panel:** click a game to play it (if it's already running, its window comes forward instead).
+Right-click a dusty game to open its launcher's uninstaller.
+
+**Appearance:** click the cog next to the *Games* title (or right-click > *Edit appearance*) for fonts,
+background color and opacity, text, bar, border and button colors. Changes preview live on the panel; *Cancel*
+puts everything back. Settings are saved in `@Resources\Settings.inc` (not in git).
+
+**Per-game settings** in `config.json` (names are case-insensitive):
+
+```json
+"games": {
+  "Path of Exile": {"companions": [
+    "%LOCALAPPDATA%\\Programs\\Awakened PoE Trade\\Awakened PoE Trade.exe",
+    {"path": "%APPDATA%\\Path of Building Community\\Path of Building.exe", "monitor": 3}
+  ]},
+  "Cities: Skylines II": {"launch": "C:\\Program Files (x86)\\Skyve CS-II\\Skyve.exe"}
+}
+```
+
+- `launch`: what the panel opens instead of the game's launcher (e.g. a mod manager).
+- `companions`: started whenever the service sees the game start, however it was launched, and skipped if
+  already running. `monitor` is the display number from Settings > Display.
+- `extra_hours`: hours played before tracking began, added to the total (e.g. `"DCS World": {"extra_hours": 56}`).
+- `vr`: `true` for VR games. The Claude prompt lists them on their own line as needing a longer, committed session.
 
 In VS Code: open the folder, pick the `.venv` interpreter, press F5 (launch configs: *Widget* and *CLI report*).
 Tests: `python -m unittest discover -s tests -t .`
@@ -46,6 +71,7 @@ Tests: `python -m unittest discover -s tests -t .`
 | Steam | `libraryfolders.vdf` + `appmanifest_*.acf` | Steam Web API (accurate, complete history) |
 | Epic | `ProgramData\Epic\...\Manifests\*.item` | Process tracker |
 | GOG | Registry (`HKLM\...\GOG.com\Games`) | Process tracker |
+| DCS World (standalone) | Registry (`HKCU\Software\Eagle Dynamics`) | Process tracker |
 | Xbox / Game Pass PC | `X:\XboxGames\*` on every drive | Process tracker |
 | Anything else | `extra_game_folders` | Process tracker |
 

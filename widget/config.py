@@ -39,6 +39,16 @@ class Config:
     ignore_names: list[str] = field(default_factory=list)
     # Rainmeter skin root (normally <Rainmeter SkinPath>\GameWidget, auto-detected)
     rainmeter_skin_dir: str = ""
+    # Per-game tweaks, keyed by game name (case-insensitive). See config.example.json.
+    #   "launch": exe/URI the panel opens instead of the launcher (e.g. a mod manager)
+    #   "companions": programs started whenever the game starts: "path" or {"path": ..., "monitor": 3}
+    #   "extra_hours": hours played before tracking began (added to the total)
+    #   "vr": true for VR games; the Claude prompt lists them separately as a bigger commitment
+    games: dict[str, dict] = field(default_factory=dict)
+
+    def game_settings(self, name: str) -> dict:
+        wanted = name.lower()
+        return next((v for k, v in self.games.items() if k.lower() == wanted), {})
 
 
 def load_config(path: Path | None = None) -> Config:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import html
 import json
 import os
 import re
@@ -156,8 +158,12 @@ def scan_epic() -> list[Game]:
         main = data.get("MainGameAppName")
         if not (name and location and app) or (main and main != app):  # skip DLC entries
             continue
+        if app.startswith("UE_"):  # Unreal Engine installs, not games
+            continue
         if not Path(location).exists():
             continue
+        ids = [data.get("CatalogNamespace"), data.get("CatalogItemId"), data.get("AppName")]
+        launch_id = "%3A".join(ids) if all(ids) else app
         games.append(
             Game(
                 id=f"epic:{app}",
@@ -166,6 +172,7 @@ def scan_epic() -> list[Game]:
                 installed=True,
                 install_path=location,
                 size_bytes=_int(data.get("InstallSize")) or None,
+                launch=f"com.epicgames.launcher://apps/{launch_id}?action=launch&silent=true",
             )
         )
     return games
@@ -197,10 +204,64 @@ def scan_gog() -> list[Game]:
                 with winreg.OpenKey(root, sub) as key:
                     name = winreg.QueryValueEx(key, "gameName")[0]
                     path = winreg.QueryValueEx(key, "path")[0]
+                    exe = _reg_value(key, "exe")
             except OSError:
                 continue
             if Path(path).exists():
-                games.append(Game(id=f"gog:{sub}", name=name, source="gog", installed=True, install_path=path))
+                games.append(Game(id=f"gog:{sub}", name=name, source="gog", installed=True, install_path=path,
+                                  launch=exe, uninstall=_gog_uninstaller(sub)))
+    return games
+
+
+def _reg_value(key, name: str) -> str | None:
+    import winreg
+
+    try:
+        return winreg.QueryValueEx(key, name)[0] or None
+    except OSError:
+        return None
+
+
+def _gog_uninstaller(game_id: str) -> str | None:
+    import winreg
+
+    sub = rf"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{game_id}_is1"
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, sub) as key:
+            return _reg_value(key, "UninstallString")
+    except OSError:
+        return None
+
+
+# --------------------------------------------------------------------------- Standalone launchers
+
+
+def scan_eagle_dynamics() -> list[Game]:
+    """Standalone DCS World (each HKCU\\Software\\Eagle Dynamics\\<product> key has a Path)."""
+    if sys.platform != "win32":
+        return []
+    import winreg
+
+    games: list[Game] = []
+    try:
+        root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Eagle Dynamics")
+    except OSError:
+        return games
+    with root:
+        index = 0
+        while True:
+            try:
+                sub = winreg.EnumKey(root, index)
+            except OSError:
+                break
+            index += 1
+            with winreg.OpenKey(root, sub) as key:
+                path = _reg_value(key, "Path")
+            if not path or not Path(path).is_dir():
+                continue
+            exe = Path(path) / "bin" / "DCS_updater.exe"  # the normal launcher: updates, then starts DCS
+            games.append(Game(id=f"dcs:{sub}", name=sub, source="dcs", installed=True, install_path=path,
+                              launch=str(exe) if exe.exists() else None))
     return games
 
 
@@ -232,6 +293,35 @@ def _xbox_name(game_dir: Path) -> str:
     return game_dir.name
 
 
+_CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz"
+
+
+def publisher_id(publisher: str) -> str:
+    """The 13-char hash Windows appends to a package name to form its family name (e.g. '8wekyb3d8bbwe')."""
+    digest = hashlib.sha256(publisher.encode("utf-16-le")).digest()[:8]
+    bits = int.from_bytes(digest, "big") << 1  # 64 bits padded to 65 = 13 base32 chars
+    return "".join(_CROCKFORD[(bits >> (5 * (12 - i))) & 31] for i in range(13))
+
+
+def _xbox_launch(game_dir: Path) -> str | None:
+    """shell:AppsFolder URI built from the package's appxmanifest (Game Pass apps can't be started by exe)."""
+    manifest = game_dir / "Content" / "appxmanifest.xml"
+    try:
+        text = manifest.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    identity = re.search(r"<Identity\b[^>]*>", text)
+    app = re.search(r'<Application\b[^>]*\bId="([^"]+)"', text)
+    if not identity or not app:
+        return None
+    name = re.search(r'\bName="([^"]+)"', identity.group(0))
+    publisher = re.search(r'\bPublisher="([^"]+)"', identity.group(0))
+    if not name or not publisher:
+        return None
+    family = f"{name.group(1)}_{publisher_id(html.unescape(publisher.group(1)))}"
+    return f"shell:AppsFolder\\{family}!{app.group(1)}"
+
+
 def scan_xbox(extra=()) -> list[Game]:
     games: list[Game] = []
     for root in _xbox_roots(extra):
@@ -245,6 +335,7 @@ def scan_xbox(extra=()) -> list[Game]:
                     source="xbox",
                     installed=True,
                     install_path=str(game_dir),
+                    launch=_xbox_launch(game_dir),
                 )
             )
     return games

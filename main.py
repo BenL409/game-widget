@@ -61,6 +61,9 @@ def main() -> None:
     mode.add_argument("--window", action="store_true", help="open the standalone tkinter widget")
     mode.add_argument("--refresh", action="store_true", help="update the Rainmeter skin data once and exit")
     mode.add_argument("--inspire", action="store_true", help="copy the 'what should I play?' prompt and open Claude")
+    mode.add_argument("--launch", metavar="GAME_ID", help="start a game (and its companions) unless it's running")
+    mode.add_argument("--uninstall", metavar="GAME_ID", help="open the game's uninstaller")
+    mode.add_argument("--appearance", action="store_true", help="open the panel's appearance window")
     mode.add_argument("--install-skin", action="store_true", help="link the Rainmeter skins into your Skins folder")
     mode.add_argument("--startup", choices=["on", "off"], help="run the background service at login")
     args = parser.parse_args()
@@ -68,6 +71,11 @@ def main() -> None:
     cfg = load_config()
     if args.install_skin:
         install_skin(cfg)
+        return
+    if args.appearance:
+        from widget.appearance_ui import open_window
+
+        open_window(cfg)
         return
     store = Store(app_data_dir() / "data.db")
 
@@ -82,13 +90,16 @@ def main() -> None:
         print(f"Wrote skin data for {service.refresh_once(cfg, store)} games.")
     elif args.inspire:
         service.inspire(cfg, store)
+    elif args.launch:
+        print(service.launch(cfg, store, args.launch))
+    elif args.uninstall:
+        print(service.uninstall(cfg, store, args.uninstall))
     elif args.startup:
         print(service.set_startup(args.startup == "on"))
     elif args.window:
-        from widget.tracker import Tracker
         from widget.ui import WidgetApp
 
-        tracker = Tracker(cfg, store)
+        tracker = service.make_tracker(cfg, store)
         tracker.start()
         try:
             WidgetApp(cfg, store, tracker).run()

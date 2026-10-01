@@ -6,3 +6,4 @@ data.db
 .claude/settings.local.json
 rainmeter/GameWidget/@Resources/data.inc
 rainmeter/GameWidget/@Resources/data.tmp
+rainmeter/GameWidget/@Resources/Settings.inc

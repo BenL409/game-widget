@@ -8,25 +8,21 @@ Meter styles can't inherit from each other in Rainmeter, so meters list them all
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from widget.appearance import render_settings  # noqa: E402  (appearance options live with the app)
 
 ROOT = Path(__file__).resolve().parent / "GameWidget"
 MAX_ROWS = 8  # keep in sync with widget/rainmeter.py
 DOT = "[\\x00B7]"
+COG = "[\\xE713]"  # Settings glyph in Segoe MDL2 Assets (ships with Windows 10/11)
 
-STYLE = """; Shared palette, defaults and meter styles. Data variables are overridden by data.inc.
+
+STYLE = """; Shared defaults and meter styles. Overridden by data.inc (data) and Settings.inc (appearance).
 [Variables]
-Font=Segoe UI
-Bg=17,18,23,232
-Border=255,255,255,20
-Text=234,236,242
-Muted=140,146,162
-Track=255,255,255,14
-Blue=122,162,247
-Amber=222,172,92
-Claude=217,119,87
-ClaudeHover=231,141,110
-Warn=238,180,90
+{appearance}
 Updated=--
 GameCount=0
 Status=No data yet - right-click > Refresh game data
@@ -37,16 +33,16 @@ MainPy=main.py
 
 [sText]
 FontFace=#Font#
-FontColor=#Text#
+FontColor=#TextColor#
 FontSize=10
 AntiAlias=1
 
 [sMuted]
-FontColor=#Muted#
+FontColor=#MutedTextColor#
 FontSize=8
 
 [sLabel]
-FontColor=#Muted#
+FontColor=#MutedTextColor#
 FontSize=7
 FontWeight=700
 StringCase=Upper
@@ -67,7 +63,7 @@ def _defaults() -> str:
     for prefix in "RMD":
         lines += [f"{prefix}Count=0", f"{prefix}None=1"]
         for i in range(1, MAX_ROWS + 1):
-            lines += [f"{prefix}{i}Name=", f"{prefix}{i}Value=", f"{prefix}{i}Sub=",
+            lines += [f"{prefix}{i}Id=", f"{prefix}{i}Name=", f"{prefix}{i}Value=", f"{prefix}{i}Sub=",
                       f"{prefix}{i}Pct=0", f"{prefix}{i}Hidden=1"]
     return "\n".join(lines)
 
@@ -91,8 +87,10 @@ ContextTitle=Refresh game data
 ContextAction=[{run} --refresh]
 ContextTitle2=Ask Claude what to play
 ContextAction2=[{run} --inspire]
-ContextTitle3=Open service log folder
-ContextAction3=["%APPDATA%\\GameWidget"]
+ContextTitle3=Edit appearance
+ContextAction3=[{run} --appearance]
+ContextTitle4=Open service log folder
+ContextAction4=["%APPDATA%\\GameWidget"]
 
 [Metadata]
 Name=Game Widget - {name}
@@ -104,14 +102,15 @@ License=MIT
 [Variables]
 @Include=#@#Style.inc
 @Include2=#@#data.inc
+@Include3=#@#Settings.inc
 {extra_vars}
 """
 
 
 def claude_button(x: int, y: str, w: int, h: int, text: str, radius: int = 8) -> str:
     """Rounded button. The label meter covers the whole area (alpha-1 fill) so it owns all mouse events."""
-    normal = f"Rectangle 0,0,{w},{h},{radius} | Fill Color #Claude# | StrokeWidth 0"
-    hover = f"Rectangle 0,0,{w},{h},{radius} | Fill Color #ClaudeHover# | StrokeWidth 0"
+    normal = f"Rectangle 0,0,{w},{h},{radius} | Fill Color #ButtonColor# | StrokeWidth 0"
+    hover = f"Rectangle 0,0,{w},{h},{radius} | Fill Color #ButtonHoverColor# | StrokeWidth 0"
     return section("ClaudeButton", Meter="Shape", X=x, Y=y, Shape=normal) + "\n" + section(
         "ClaudeLabel",
         Meter="String",
@@ -121,7 +120,7 @@ def claude_button(x: int, y: str, w: int, h: int, text: str, radius: int = 8) ->
         W=w,
         H=h,
         StringAlign="CenterCenter",
-        FontColor="255,255,255",
+        FontColor="#ButtonTextColor#",
         FontSize=9,
         FontWeight=600,
         SolidColor="0,0,0,1",
@@ -133,8 +132,10 @@ def claude_button(x: int, y: str, w: int, h: int, text: str, radius: int = 8) ->
     )
 
 
-def rows(prefix: str, count: int, x: int, y: str, w: int, row_h: int, bar_color: str, value_w: int = 44) -> str:
-    """`y` is a Rainmeter formula for the first row's top (sections move as earlier ones grow or shrink)."""
+def rows(prefix: str, count: int, x: int, y: str, w: int, row_h: int, bar_color: str, value_w: int = 44,
+         uninstall: bool = False) -> str:
+    """`y` is a Rainmeter formula for the first row's top (sections move as earlier ones grow or shrink).
+    Each row ends with a near-transparent hit area on top: click launches, right-click (dusty) uninstalls."""
     out = []
     sub_w = 64
     for i in range(1, count + 1):
@@ -142,7 +143,7 @@ def rows(prefix: str, count: int, x: int, y: str, w: int, row_h: int, bar_color:
         hidden = f"#{prefix}{i}Hidden#"
         out.append(section(
             f"{prefix}{i}Name", Meter="String", MeterStyle="sName", X=x, Y=ry, W=w - value_w - sub_w - 6,
-            Text=f"#{prefix}{i}Name#", ToolTipText=f"#{prefix}{i}Name#", Hidden=hidden,
+            Text=f"#{prefix}{i}Name#", Hidden=hidden,
         ))
         out.append(section(
             f"{prefix}{i}Sub", Meter="String", MeterStyle="sMuted", X=x + w - value_w - 4, Y=f"({ry}+2)",
@@ -154,13 +155,26 @@ def rows(prefix: str, count: int, x: int, y: str, w: int, row_h: int, bar_color:
         ))
         out.append(section(
             f"{prefix}{i}Bar", Meter="Shape", X=x, Y=f"({ry}+20)", Hidden=hidden,
-            Shape=f"Rectangle 0,0,{w},2,1 | Fill Color #Track# | StrokeWidth 0",
+            Shape=f"Rectangle 0,0,{w},2,1 | Fill Color #BarTrackColor# | StrokeWidth 0",
             Shape2=f"Rectangle 0,0,({w}*#{prefix}{i}Pct#),2,1 | Fill Color {bar_color} | StrokeWidth 0",
+        ))
+        hit = f"{prefix}{i}Hit"
+        normal = f"Rectangle 0,0,{w + 12},{row_h - 2},5 | Fill Color 255,255,255,1 | StrokeWidth 0"
+        hover = f"Rectangle 0,0,{w + 12},{row_h - 2},5 | Fill Color #RowHoverColor# | StrokeWidth 0"
+        tip = "Click to play" + ("  /  right-click to uninstall" if uninstall else "")
+        out.append(section(
+            hit, Meter="Shape", X=x - 6, Y=f"({ry}-4)", Hidden=hidden, Shape=normal,
+            ToolTipTitle=f"#{prefix}{i}Name#", ToolTipText=tip,
+            MouseOverAction=f'[!SetOption {hit} Shape "{hover}"][!UpdateMeter {hit}][!Redraw]',
+            MouseLeaveAction=f'[!SetOption {hit} Shape "{normal}"][!UpdateMeter {hit}][!Redraw]',
+            LeftMouseUpAction=f'["#PythonW#" "#MainPy#" --launch "#{prefix}{i}Id#"]',
+            RightMouseUpAction=f'["#PythonW#" "#MainPy#" --uninstall "#{prefix}{i}Id#"]' if uninstall else None,
         ))
     return "\n".join(out)
 
 
-SECTIONS = (("R", "Last 2 weeks", "#Blue#"), ("M", "Most played", "#Blue#,150"), ("D", "Gathering dust", "#Amber#"))
+SECTIONS = (("R", "Last 2 weeks", "#RecentBarColor#"), ("M", "Most played", "#MostPlayedBarColor#"),
+            ("D", "Gathering dust", "#DustBarColor#"))
 
 
 def panel() -> str:
@@ -180,24 +194,33 @@ def panel() -> str:
     out = [header("Panel", "Recent, most played and dusty games stacked in one dark panel.",
                   "; Layout (formulas, resolved where used)\n" + "\n".join(layout))]
     out.append(section("Background", Meter="Shape",
-                       Shape=f"Rectangle 0.5,0.5,{w - 1},(#PanelH#-1),12 | Fill Color #Bg# | StrokeWidth 1 | Stroke Color #Border#"))
-    out.append(section("Title", Meter="String", MeterStyle="sText", X=pad, Y=14, FontSize=11, FontWeight=700,
+                       Shape=f"Rectangle 0.5,0.5,{w - 1},(#PanelH#-1),12 | Fill Color #BackgroundColor#,#BackgroundOpacity# | StrokeWidth 1 | Stroke Color #BorderColor#"))
+    out.append(section("Title", Meter="String", MeterStyle="sText", X=pad, Y=14, FontFace="#TitleFont#", FontSize=11, FontWeight=700,
                        Text="Games"))
+    # Cog sits just right of the title (X=...R follows the title's width, whatever font is chosen)
+    out.append(section(
+        "Cog", Meter="String", MeterStyle="sText", X="4R", Y=15, FontFace="Segoe MDL2 Assets", FontSize=10,
+        FontColor="#MutedTextColor#", Padding="3,3,3,3", SolidColor="0,0,0,1", Text=COG, ToolTipText="Appearance",
+        MouseOverAction="[!SetOption Cog FontColor #TextColor#][!UpdateMeter Cog][!Redraw]",
+        MouseLeaveAction="[!SetOption Cog FontColor #MutedTextColor#][!UpdateMeter Cog][!Redraw]",
+        LeftMouseUpAction='["#PythonW#" "#MainPy#" --appearance]',
+    ))
     out.append(section("Meta", Meter="String", MeterStyle="sMuted", X=w - pad, Y=18, StringAlign="Right",
                        Text=f"#Updated#  {DOT}  #GameCount# games"))
     out.append(section("Status", Meter="String", MeterStyle="sMuted", X=pad, Y=34, W=inner, ClipString=1,
-                       FontColor="#Warn#", Text="#Status#", ToolTipText="#Status#", Hidden="#StatusHidden#"))
+                       FontColor="#WarningColor#", Text="#Status#", ToolTipText="#Status#", Hidden="#StatusHidden#"))
     for prefix, label, color in SECTIONS:
         out.append(section(f"{prefix}Label", Meter="String", MeterStyle="sLabel", X=pad, Y=f"#{prefix}Top#",
                            Text=label, Hidden=f"#{prefix}None#"))
-        out.append(rows(prefix, per, pad, f"#{prefix}Top#+20", inner, row_h, color))
+        out.append(rows(prefix, per, pad, f"#{prefix}Top#+20", inner, row_h, color, uninstall=prefix == "D"))
     out.append(claude_button(pad, "#BtnY#", inner, btn_h, "What should I play?"))
     return "\n".join(out)
 
 
 def main() -> None:
     files = {
-        ROOT / "@Resources" / "Style.inc": STYLE.format(defaults=_defaults()),
+        ROOT / "@Resources" / "Style.inc": STYLE.format(appearance=render_settings(with_comments=False), defaults=_defaults()),
+        ROOT / "@Resources" / "Settings.default.inc": render_settings(),
         ROOT / "Panel" / "Panel.ini": panel(),
     }
     for path, text in files.items():

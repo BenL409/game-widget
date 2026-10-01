@@ -48,3 +48,20 @@ def recently_played(key: str, steam_id: str) -> list[dict]:
     """Games played in the last 2 weeks, with playtime_2weeks (minutes)."""
     data = _get("GetRecentlyPlayedGames", {"key": key, "steamid": steam_id, "format": "json"})
     return data.get("games", [])
+
+
+def genres(appid: int) -> list[str]:
+    """Store genres for one app (the store API ignores filters when asked for several at once)."""
+    try:
+        resp = requests.get(
+            "https://store.steampowered.com/api/appdetails",
+            params={"appids": appid, "filters": "genres", "l": "english"},
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        raise SteamError(f"Steam store unreachable: {exc}") from exc
+    if resp.status_code != 200:
+        raise SteamError(f"Steam store returned HTTP {resp.status_code}.")
+    entry = (resp.json() or {}).get(str(appid)) or {}
+    data = entry.get("data") if entry.get("success") else None
+    return [g["description"] for g in (data or {}).get("genres", []) if g.get("description")]

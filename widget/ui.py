@@ -10,9 +10,9 @@ from tkinter import ttk
 from . import fmt
 from .config import Config
 from .dusty import DustyGame, find_dusty
-from .library import build_library
+from .library import add_genres, build_library
 from .models import Game
-from .prompt import build_inspiration
+from .prompt import build_inspiration, candidates, vr_games
 from .store import Store
 from .tracker import Tracker
 
@@ -103,6 +103,8 @@ class WidgetApp:
             games, warnings = build_library(self.cfg, self.store)
             dusty = find_dusty(games, self.cfg.dusty_days, datetime.now(timezone.utc),
                                self.store.tracking_started())
+            recent, top, neglected = candidates(games, dusty)
+            add_genres(recent + top + [d.game for d in neglected] + vr_games(games), self.store)
             self._results.put(("ok", games, dusty, warnings))
         except Exception as exc:  # surface in the status line instead of dying silently
             self._results.put(("err", str(exc)))

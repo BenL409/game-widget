@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from widget import fmt, library, rainmeter, scanners, steam_api
+from widget import appearance, fmt, launch, library, rainmeter, scanners, steam_api
 from widget.config import Config
 from widget.dusty import find_dusty
 from widget.models import Game
@@ -110,6 +110,7 @@ class LibraryTests(unittest.TestCase):
              mock.patch.object(scanners, "_steam_root", return_value=None), \
              mock.patch.object(scanners, "scan_epic", return_value=[]), \
              mock.patch.object(scanners, "scan_gog", return_value=[]), \
+             mock.patch.object(scanners, "scan_eagle_dynamics", return_value=[]), \
              mock.patch.object(scanners, "scan_xbox", return_value=[]):
             games, warnings = library.build_library(cfg, store)
 
@@ -163,6 +164,148 @@ class RainmeterTests(unittest.TestCase):
         self.assertIn("F1® Manager", path.read_text(encoding="utf-16"))
     def test_idle_formats(self):
         self.assertEqual([fmt.idle(d) for d in (5, 90, 1900)], ["5d", "3mo", "5y"])
+
+
+class LaunchTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.cfg = Config(games={"Cities: Skylines II": {"launch": "C:\\Mods\\Skyve.exe"},
+                                 "Path of Exile": {"companions": [os.path.join(self.tmp, "trade.exe"),
+                                                                  {"path": os.path.join(self.tmp, "pob.exe"), "monitor": 3}]}})
+
+    def test_targets(self):
+        steam = Game("steam:620", "Portal 2", "steam", installed=True)
+        self.assertEqual(launch.launch_target(steam, self.cfg), "steam://rungameid/620")
+        self.assertEqual(launch.uninstall_target(steam), "steam://uninstall/620")
+        cities = Game("steam:949230", "cities: skylines ii", "steam", installed=True)
+        self.assertEqual(launch.launch_target(cities, self.cfg), "C:\\Mods\\Skyve.exe")
+        epic = Game("epic:a", "A", "epic", launch="com.epicgames.launcher://apps/x?action=launch")
+        self.assertEqual(launch.launch_target(epic, self.cfg), epic.launch)
+
+    def test_guess_exe_skips_installers(self):
+        game_dir = Path(self.tmp, "Loose")
+        (game_dir / "bin").mkdir(parents=True)
+        (game_dir / "unins000.exe").write_bytes(b"x" * 5000)
+        (game_dir / "bin" / "Game.exe").write_bytes(b"x" * 100)
+        loose = Game("other:Loose", "Loose", "other", installed=True, install_path=str(game_dir))
+        self.assertEqual(launch.launch_target(loose, self.cfg), str(game_dir / "bin" / "Game.exe"))
+
+    def test_no_second_instances(self):
+        root = os.path.join(self.tmp, "PoE")
+        poe = Game("steam:238960", "Path of Exile", "steam", installed=True, install_path=root)
+        for name in ("trade.exe", "pob.exe"):
+            Path(self.tmp, name).write_bytes(b"")
+        game_exe, trade = launch.norm_path(os.path.join(root, "PoE.exe")), launch.norm_path(os.path.join(self.tmp, "trade.exe"))
+        with mock.patch.object(launch, "open_target") as opened, \
+             mock.patch("widget.windows.place_on_monitor"), \
+             mock.patch("widget.windows.focus_first") as focus:
+            self.assertEqual(launch.launch_game(poe, self.cfg, running={game_exe, trade}), "already running")
+            focus.assert_called_once()
+            self.assertEqual([c.args[0] for c in opened.call_args_list], [os.path.join(self.tmp, "pob.exe")])
+
+            opened.reset_mock()
+            launch.launch_game(poe, self.cfg, running=set())
+            self.assertEqual([c.args[0] for c in opened.call_args_list],
+                             ["steam://rungameid/238960", os.path.join(self.tmp, "trade.exe"), os.path.join(self.tmp, "pob.exe")])
+
+    def test_tracker_reports_each_start_once(self):
+        store = Store(os.path.join(self.tmp, "t.db"))
+        self.addCleanup(store.close)
+        started = []
+        tracker = Tracker(self.cfg, store, on_start=lambda gid, name, running: started.append((gid, name)))
+        root = os.path.join(self.tmp, "PoE")
+        tracker.set_games([Game("steam:238960", "Path of Exile", "steam", installed=True, install_path=root)])
+        exe = os.path.join(root, "PoE.exe")
+        for ts in (0, 15, 30):
+            tracker.poll([exe], ts)
+        tracker.poll([], 45)
+        tracker.poll([exe], 60)
+        self.assertEqual(started, [("steam:238960", "Path of Exile")] * 2)
+
+    def test_publisher_id(self):
+        self.assertEqual(scanners.publisher_id("CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"),
+                         "8wekyb3d8bbwe")
+
+
+class SmartPromptTests(unittest.TestCase):
+    def test_genres_sessions_and_time(self):
+        poe = Game("steam:1", "Path of Exile", "steam", installed=True, playtime_minutes=30000, recent_minutes=600,
+                   last_played=days_ago(1), genres=["Indie", "Action", "RPG", "Adventure"], avg_session_minutes=95)
+        prompt = build_prompt([poe], [], now=datetime(2026, 10, 2, 21, 40))
+        self.assertIn("It's Friday evening, 21:40.", prompt)
+        self.assertIn("Path of Exile [Action/RPG] (10h, usual session ~1.6h)", prompt)
+        self.assertIn("Most played overall: Path of Exile (500h)", prompt)  # described once only
+
+    def test_vr_games_get_their_own_line(self):
+        dcs = Game("dcs:DCS World", "DCS World", "dcs", installed=True, playtime_minutes=56 * 60, vr=True)
+        pc2 = Game("steam:378860", "Project CARS 2", "steam", installed=True, playtime_minutes=590,
+                   last_played=datetime(2026, 6, 1, tzinfo=timezone.utc), vr=True)
+        flat = Game("steam:1", "Flat", "steam", installed=True, playtime_minutes=60)
+        prompt = build_prompt([dcs, pc2, flat], [], now=datetime(2026, 10, 2, 21, 40))
+        vr_line = next(line for line in prompt.splitlines() if line.startswith("VR games"))
+        self.assertIn("DCS World (56h total)", vr_line)
+        self.assertIn("Project CARS 2 (9.8h total, last played 4mo ago)", vr_line)
+        self.assertNotIn("Flat", vr_line)
+        self.assertIn("Only suggest a VR game", prompt)
+
+    def test_snapshot_round_trip(self):
+        game = Game("steam:1", "A", "steam", last_played=days_ago(3), genres=["RPG"])
+        self.assertEqual(Game.from_dict(game.to_dict()), game)
+
+    def test_genres_are_cached_and_lookups_capped(self):
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        store = Store(os.path.join(tmp, "t.db"))
+        self.addCleanup(store.close)
+        games = [Game(f"steam:{i}", f"G{i}", "steam") for i in range(3)]
+        with mock.patch.object(steam_api, "genres", return_value=["RPG"]) as lookup:
+            library.add_genres(games, store, max_lookups=2)
+            self.assertEqual(lookup.call_count, 2)
+            library.add_genres(games, store, max_lookups=2)
+            self.assertEqual(lookup.call_count, 3)  # only the one still missing
+        self.assertEqual([g.genres for g in games], [["RPG"]] * 3)
+
+
+class AppearanceTests(unittest.TestCase):
+    def test_settings_round_trip_keeps_unknown_out(self):
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        path = Path(tmp, "Settings.inc")
+        values = appearance.defaults()
+        values["TextColor"] = "1,2,3"
+        values["Font"] = "Bahnschrift"
+        appearance.write_settings(path, values)
+        self.assertEqual(appearance.read_settings(path), values)
+        path.write_text("[Variables]\nBackgroundOpacity=100\nNotASetting=1\n", encoding="ascii")
+        read = appearance.read_settings(path)
+        self.assertEqual(read["BackgroundOpacity"], "100")
+        self.assertNotIn("NotASetting", read)
+        self.assertEqual(read["TextColor"], appearance.defaults()["TextColor"])
+
+    def test_colors(self):
+        self.assertEqual(appearance.parse_color("1,2,3"), ((1, 2, 3), None))
+        self.assertEqual(appearance.parse_color("1,2,3,400"), ((1, 2, 3), 255))
+        self.assertEqual(appearance.parse_color("junk"), ((255, 255, 255), None))
+        self.assertEqual(appearance.format_color((1, 2, 3), 40), "1,2,3,40")
+
+    def test_every_group_item_is_a_setting(self):
+        names = {name for _, items in appearance.GROUPS for name, _ in items}
+        self.assertEqual(names, set(appearance.defaults()))
+
+
+class ExtraHoursTests(unittest.TestCase):
+    def test_extra_hours_added(self):
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        store = Store(os.path.join(tmp, "t.db"))
+        self.addCleanup(store.close)
+        dcs = Game("dcs:DCS World", "DCS World", "dcs", installed=True, install_path=tmp)
+        cfg = Config(games={"dcs world": {"extra_hours": 56}})
+        with mock.patch.object(scanners, "scan_steam", return_value=[]), \
+             mock.patch.object(scanners, "scan_epic", return_value=[]), \
+             mock.patch.object(scanners, "scan_gog", return_value=[]), \
+             mock.patch.object(scanners, "scan_eagle_dynamics", return_value=[dcs]), \
+             mock.patch.object(scanners, "scan_xbox", return_value=[]), \
+             mock.patch.object(scanners, "dir_size", return_value=0):
+            games, _ = library.build_library(cfg, store)
+        self.assertEqual(games[0].playtime_minutes, 56 * 60)
 
 
 if __name__ == "__main__":
