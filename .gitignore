@@ -1,0 +1,8 @@
+config.json
+.venv/
+__pycache__/
+*.pyc
+data.db
+.claude/settings.local.json
+rainmeter/GameWidget/@Resources/data.inc
+rainmeter/GameWidget/@Resources/data.tmp

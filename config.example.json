@@ -1,0 +1,10 @@
+{
+  "steam_api_key": "PASTE_YOUR_KEY_HERE",
+  "steam_id": "PASTE_YOUR_17_DIGIT_STEAMID64_HERE",
+  "dusty_days": 30,
+  "always_on_top": true,
+  "extra_game_folders": [],
+  "xbox_games_roots": [],
+  "steam_library_paths": [],
+  "ignore_names": []
+}
