@@ -281,13 +281,23 @@ class AppearanceTests(unittest.TestCase):
         self.assertEqual(read["TextColor"], appearance.defaults()["TextColor"])
 
     def test_colors(self):
-        self.assertEqual(appearance.parse_color("1,2,3"), ((1, 2, 3), None))
-        self.assertEqual(appearance.parse_color("1,2,3,400"), ((1, 2, 3), 255))
-        self.assertEqual(appearance.parse_color("junk"), ((255, 255, 255), None))
-        self.assertEqual(appearance.format_color((1, 2, 3), 40), "1,2,3,40")
+        self.assertEqual(appearance.parse_color("1,2,3"), (1, 2, 3))
+        self.assertEqual(appearance.parse_color("#ff8000"), (255, 128, 0))
+        self.assertIsNone(appearance.parse_color("1,2,300"))
+        self.assertIsNone(appearance.parse_color("junk"))
 
-    def test_every_group_item_is_a_setting(self):
-        names = {name for _, items in appearance.GROUPS for name, _ in items}
+    def test_old_rgba_settings_are_migrated(self):
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        path = Path(tmp, "Settings.inc")
+        path.write_text("[Variables]\nBorderColor=255,255,255,40\nTextColor=1,2,3\n", encoding="ascii")
+        self.assertTrue(appearance.migrate(path))
+        values = appearance.read_settings(path)
+        self.assertEqual((values["BorderColor"], values["BorderOpacity"]), ("255,255,255", "40"))
+        self.assertEqual(values["TextColor"], "1,2,3")
+        self.assertFalse(appearance.migrate(path))  # already current
+
+    def test_every_setting_has_a_row(self):
+        names = {n for _, items in appearance.GROUPS for name, _, opacity in items for n in (name, opacity) if n}
         self.assertEqual(names, set(appearance.defaults()))
 
 

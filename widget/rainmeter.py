@@ -10,7 +10,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import fmt
+from . import appearance, fmt
 from .dusty import DustyGame
 from .models import Game
 
@@ -98,6 +98,7 @@ def write(text: str, path: Path) -> None:
     settings, defaults = path.with_name("Settings.inc"), path.with_name("Settings.default.inc")
     if not settings.exists() and defaults.exists():  # the user's appearance file; never overwritten
         shutil.copyfile(defaults, settings)
+    appearance.migrate(settings)  # older files: 'R,G,B,A' colours -> colour + ...Opacity
     tmp = path.with_suffix(".tmp")
     tmp.write_text(text, encoding="utf-16", newline="")
     os.replace(tmp, path)

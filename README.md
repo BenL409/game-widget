@@ -39,9 +39,10 @@ Right-click a skin for *Refresh game data* / *Ask Claude* / *Edit appearance*. S
 **In the panel:** click a game to play it (if it's already running, its window comes forward instead).
 Right-click a dusty game to open its launcher's uninstaller.
 
-**Appearance:** click the cog next to the *Games* title (or right-click > *Edit appearance*) for fonts,
-background color and opacity, text, bar, border and button colors. Changes preview live on the panel; *Cancel*
-puts everything back. Settings are saved in `@Resources\Settings.inc` (not in git).
+**Appearance:** click the cog next to the *Games* title (or right-click > *Edit appearance*) to open the
+*Appearance* skin beside the panel. Click a colour row, then a palette dot (or *Custom colour* for R,G,B / #hex);
+click or scroll the sliders for opacity; use the arrows (or click the name) for fonts. The panel updates as you go;
+*Cancel* puts everything back. Settings are saved in `@Resources\Settings.inc` (not in git).
 
 **Per-game settings** in `config.json` (names are case-insensitive):
 
