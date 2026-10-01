@@ -11,11 +11,13 @@ from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from . import launch as launcher
 from . import rainmeter
 from .config import Config, app_data_dir
-from .dusty import find_dusty
-from .library import build_library
-from .prompt import build_inspiration
+from .dusty import DustyGame, find_dusty
+from .library import add_genres, build_library
+from .models import Game
+from .prompt import build_inspiration, candidates, vr_games
 from .store import Store
 from .tracker import Tracker
 
@@ -31,36 +33,80 @@ def setup_logging() -> None:
 
 
 def _snapshot_path() -> Path:
-    return app_data_dir() / "inspire.json"
+    return app_data_dir() / "snapshot.json"
 
 
 def refresh_once(cfg: Config, store: Store, tracker: Tracker | None = None) -> int:
-    """Build the library, write the skin data + inspire snapshot, and reload the skins. Returns game count."""
+    """Build the library, write the skin data + snapshot, and reload the skins. Returns game count."""
     games, warnings = build_library(cfg, store)
     dusty = find_dusty(games, cfg.dusty_days, datetime.now(timezone.utc), store.tracking_started())
+    recent, top, neglected = candidates(games, dusty)
+    add_genres(recent + top + [d.game for d in neglected] + vr_games(games), store)
     if tracker:
         tracker.set_games(games)
 
     rainmeter.write(rainmeter.render(games, dusty, warnings), rainmeter.data_path(cfg.rainmeter_skin_dir))
-    prompt, url, prefilled = build_inspiration(games, dusty)
-    _snapshot_path().write_text(json.dumps({"prompt": prompt, "url": url, "prefilled": prefilled}), encoding="utf-8")
+    snapshot = {
+        "games": [g.to_dict() for g in games],
+        "dusty": [[d.game.id, d.idle_days, d.score, d.note] for d in dusty],
+    }
+    _snapshot_path().write_text(json.dumps(snapshot), encoding="utf-8")
     rainmeter.refresh_skins()
     for warning in warnings:
         log.warning(warning)
     return len(games)
 
 
-def inspire(cfg: Config, store: Store) -> None:
-    """Copy the prompt and open Claude. Uses the last refresh's snapshot so the click feels instant."""
+def load_snapshot(cfg: Config, store: Store) -> tuple[dict[str, Game], list[DustyGame]]:
+    """The last refresh's library, so the skins' clicks respond instantly (refreshes first if there is none)."""
     path = _snapshot_path()
     if not path.exists():
         refresh_once(cfg, store)
-    snap = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    games = {g["id"]: Game.from_dict(g) for g in data["games"]}
+    dusty = [DustyGame(games[gid], idle, score, note) for gid, idle, score, note in data["dusty"] if gid in games]
+    return games, dusty
+
+
+def inspire(cfg: Config, store: Store) -> None:
+    """Copy the prompt and open Claude. The prompt is built now so the time of day is current."""
+    games, dusty = load_snapshot(cfg, store)
+    prompt, url, _ = build_inspiration(list(games.values()), dusty)
     if sys.platform == "win32":
         from .clipboard import copy
 
-        copy(snap["prompt"])
-    webbrowser.open(snap["url"])
+        copy(prompt)
+    webbrowser.open(url)
+
+
+def launch(cfg: Config, store: Store, game_id: str) -> str:
+    games, _ = load_snapshot(cfg, store)
+    if game_id not in games:
+        return f"unknown game {game_id}"
+    return launcher.launch_game(games[game_id], cfg)
+
+
+def uninstall(cfg: Config, store: Store, game_id: str) -> str:
+    games, _ = load_snapshot(cfg, store)
+    game = games.get(game_id)
+    target = launcher.uninstall_target(game) if game else None
+    if not target:
+        return f"no uninstaller for {game_id}"
+    launcher.open_target(target)
+    log.info("%s: opened uninstaller %s", game.name, target)
+    return f"opened {target}"
+
+
+def make_tracker(cfg: Config, store: Store) -> Tracker:
+    """Tracker that starts each game's companions when it sees the game start, however it was launched."""
+
+    def on_start(game_id: str, name: str, running: set[str]) -> None:
+        try:
+            launcher.start_companions(cfg, name, running)
+        except Exception:
+            log.exception("starting companions for %s failed", name)
+
+    return Tracker(cfg, store, on_start)
 
 
 def _single_instance():
@@ -84,7 +130,7 @@ def run_service(cfg: Config, store: Store) -> None:
         log.info("service already running; exiting")
         print("Game widget service is already running.")
         return
-    tracker = Tracker(cfg, store)
+    tracker = make_tracker(cfg, store)
     tracker.start()
     log.info("service started")
     print("Game widget service running (Ctrl+C to stop). Log:", app_data_dir() / "service.log")

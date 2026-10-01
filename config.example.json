@@ -6,5 +6,19 @@
   "extra_game_folders": [],
   "xbox_games_roots": [],
   "steam_library_paths": [],
-  "ignore_names": []
+  "ignore_names": [],
+  "games": {
+    "Path of Exile": {
+      "companions": [
+        "%LOCALAPPDATA%\\Programs\\Awakened PoE Trade\\Awakened PoE Trade.exe",
+        {
+          "path": "%APPDATA%\\Path of Building Community\\Path of Building.exe",
+          "monitor": 2
+        }
+      ]
+    },
+    "Cities: Skylines II": {
+      "launch": "C:\\Program Files (x86)\\Skyve CS-II\\Skyve.exe"
+    }
+  }
 }

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import configparser
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import fmt
+from . import appearance, fmt
 from .dusty import DustyGame
 from .models import Game
 
@@ -45,11 +46,12 @@ def _clean(text: str) -> str:
     return " ".join(str(text).split()).replace("#", "\uff03")
 
 
-def _rows(prefix: str, rows: list[tuple[str, str, str, float]]) -> list[str]:
+def _rows(prefix: str, rows: list[tuple[str, str, str, str, float]]) -> list[str]:
     lines = [f"{prefix}Count={len(rows)}", f"{prefix}None={0 if rows else 1}"]  # skins size themselves from these
     for i in range(1, MAX_ROWS + 1):
-        name, value, sub, pct = rows[i - 1] if i <= len(rows) else ("", "", "", 0.0)
+        game_id, name, value, sub, pct = rows[i - 1] if i <= len(rows) else ("", "", "", "", 0.0)
         lines += [
+            f"{prefix}{i}Id={_clean(game_id)}",
             f"{prefix}{i}Name={_clean(name)}",
             f"{prefix}{i}Value={_clean(value)}",
             f"{prefix}{i}Sub={_clean(sub)}",
@@ -81,11 +83,11 @@ def render(games: list[Game], dusty: list[DustyGame], warnings: list[str], now: 
         f"PythonW={pythonw if pythonw.exists() else sys.executable}",
         f"MainPy={script}",
     ]
-    lines += _rows("R", [(g.name, fmt.hours(g.recent_minutes), f"{fmt.hours(g.playtime_minutes)} total",
+    lines += _rows("R", [(g.id, g.name, fmt.hours(g.recent_minutes), f"{fmt.hours(g.playtime_minutes)} total",
                           g.recent_minutes / max_recent) for g in recent])
-    lines += _rows("M", [(g.name, fmt.hours(g.playtime_minutes), fmt.ago(g.last_played, now),
+    lines += _rows("M", [(g.id, g.name, fmt.hours(g.playtime_minutes), fmt.ago(g.last_played, now),
                           g.playtime_minutes / max_top) for g in top])
-    lines += _rows("D", [(d.game.name, fmt.idle(d.idle_days) if d.idle_days is not None else "never",
+    lines += _rows("D", [(d.game.id, d.game.name, fmt.idle(d.idle_days) if d.idle_days is not None else "never",
                           fmt.size(d.game.size_bytes), (d.idle_days or 0) / max_idle) for d in dusty])
     return "\r\n".join(lines) + "\r\n"
 
@@ -93,6 +95,10 @@ def render(games: list[Game], dusty: list[DustyGame], warnings: list[str], now: 
 def write(text: str, path: Path) -> None:
     """Atomic write as UTF-16 LE with BOM, the encoding Rainmeter reads non-ASCII text from reliably."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    settings, defaults = path.with_name("Settings.inc"), path.with_name("Settings.default.inc")
+    if not settings.exists() and defaults.exists():  # the user's appearance file; never overwritten
+        shutil.copyfile(defaults, settings)
+    appearance.migrate(settings)  # older files: 'R,G,B,A' colours -> colour + ...Opacity
     tmp = path.with_suffix(".tmp")
     tmp.write_text(text, encoding="utf-16", newline="")
     os.replace(tmp, path)

@@ -8,25 +8,26 @@ Meter styles can't inherit from each other in Rainmeter, so meters list them all
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from widget.appearance import APPEARANCE, GROUPS, PALETTE, render_settings  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent / "GameWidget"
 MAX_ROWS = 8  # keep in sync with widget/rainmeter.py
 DOT = "[\\x00B7]"
+# Segoe MDL2 Assets glyphs (the icon font that ships with Windows 10/11)
+COG, CLOSE, LEFT, RIGHT = "[\\xE713]", "[\\xE8BB]", "[\\xE76B]", "[\\xE76C]"
+SETTINGS_CONFIG = "GameWidget\\Settings"
+SETTINGS_W = 320
+FONTS = ["Segoe UI", "Segoe UI Variable Display", "Segoe UI Semibold", "Bahnschrift", "Calibri", "Candara",
+         "Corbel", "Arial", "Verdana", "Tahoma", "Trebuchet MS", "Georgia", "Consolas", "Cascadia Code"]
 
-STYLE = """; Shared palette, defaults and meter styles. Data variables are overridden by data.inc.
+
+STYLE = """; Shared defaults and meter styles. Overridden by data.inc (data) and Settings.inc (appearance).
 [Variables]
-Font=Segoe UI
-Bg=17,18,23,232
-Border=255,255,255,20
-Text=234,236,242
-Muted=140,146,162
-Track=255,255,255,14
-Blue=122,162,247
-Amber=222,172,92
-Claude=217,119,87
-ClaudeHover=231,141,110
-Warn=238,180,90
+{appearance}
 Updated=--
 GameCount=0
 Status=No data yet - right-click > Refresh game data
@@ -37,16 +38,16 @@ MainPy=main.py
 
 [sText]
 FontFace=#Font#
-FontColor=#Text#
+FontColor=#TextColor#
 FontSize=10
 AntiAlias=1
 
 [sMuted]
-FontColor=#Muted#
+FontColor=#MutedTextColor#
 FontSize=8
 
 [sLabel]
-FontColor=#Muted#
+FontColor=#MutedTextColor#
 FontSize=7
 FontWeight=700
 StringCase=Upper
@@ -67,7 +68,7 @@ def _defaults() -> str:
     for prefix in "RMD":
         lines += [f"{prefix}Count=0", f"{prefix}None=1"]
         for i in range(1, MAX_ROWS + 1):
-            lines += [f"{prefix}{i}Name=", f"{prefix}{i}Value=", f"{prefix}{i}Sub=",
+            lines += [f"{prefix}{i}Id=", f"{prefix}{i}Name=", f"{prefix}{i}Value=", f"{prefix}{i}Sub=",
                       f"{prefix}{i}Pct=0", f"{prefix}{i}Hidden=1"]
     return "\n".join(lines)
 
@@ -91,8 +92,10 @@ ContextTitle=Refresh game data
 ContextAction=[{run} --refresh]
 ContextTitle2=Ask Claude what to play
 ContextAction2=[{run} --inspire]
-ContextTitle3=Open service log folder
-ContextAction3=["%APPDATA%\\GameWidget"]
+ContextTitle3=Edit appearance
+ContextAction3=[!ToggleConfig "{SETTINGS_CONFIG}" "Settings.ini"]
+ContextTitle4=Open service log folder
+ContextAction4=["%APPDATA%\\GameWidget"]
 
 [Metadata]
 Name=Game Widget - {name}
@@ -104,16 +107,23 @@ License=MIT
 [Variables]
 @Include=#@#Style.inc
 @Include2=#@#data.inc
+@Include3=#@#Settings.inc
 {extra_vars}
 """
 
 
-def claude_button(x: int, y: str, w: int, h: int, text: str, radius: int = 8) -> str:
-    """Rounded button. The label meter covers the whole area (alpha-1 fill) so it owns all mouse events."""
-    normal = f"Rectangle 0,0,{w},{h},{radius} | Fill Color #Claude# | StrokeWidth 0"
-    hover = f"Rectangle 0,0,{w},{h},{radius} | Fill Color #ClaudeHover# | StrokeWidth 0"
-    return section("ClaudeButton", Meter="Shape", X=x, Y=y, Shape=normal) + "\n" + section(
-        "ClaudeLabel",
+BUTTON_H, BUTTON_RADIUS = 34, 8
+
+
+def rounded_button(name: str, x: int, y, w: int, text: str, action: str, fill: str, hover: str, text_color: str,
+                   tooltip: str | None = None, **extra) -> str:
+    """Rounded button like the panel's Claude button. The label covers the whole area (alpha-1 fill) so it
+    owns all mouse events; the shape underneath swaps fill on hover."""
+    h = BUTTON_H
+    normal = f"Rectangle 0,0,{w},{h},{BUTTON_RADIUS} | Fill Color {fill} | StrokeWidth 0"
+    over = f"Rectangle 0,0,{w},{h},{BUTTON_RADIUS} | Fill Color {hover} | StrokeWidth 0"
+    return section(f"{name}Button", Meter="Shape", X=x, Y=y, Shape=normal, **extra) + "\n" + section(
+        f"{name}Label",
         Meter="String",
         MeterStyle="sText",
         X=x + w // 2,
@@ -121,20 +131,29 @@ def claude_button(x: int, y: str, w: int, h: int, text: str, radius: int = 8) ->
         W=w,
         H=h,
         StringAlign="CenterCenter",
-        FontColor="255,255,255",
+        FontColor=text_color,
         FontSize=9,
         FontWeight=600,
         SolidColor="0,0,0,1",
         Text=text,
-        ToolTipText="Copies a prompt about your library and opens claude.ai",
-        MouseOverAction=f'[!SetOption ClaudeButton Shape "{hover}"][!UpdateMeter ClaudeButton][!Redraw]',
-        MouseLeaveAction=f'[!SetOption ClaudeButton Shape "{normal}"][!UpdateMeter ClaudeButton][!Redraw]',
-        LeftMouseUpAction='["#PythonW#" "#MainPy#" --inspire]',
+        ToolTipText=tooltip,
+        MouseOverAction=f'[!SetOption {name}Button Shape "{over}"][!UpdateMeter {name}Button][!Redraw]',
+        MouseLeaveAction=f'[!SetOption {name}Button Shape "{normal}"][!UpdateMeter {name}Button][!Redraw]',
+        LeftMouseUpAction=action,
+        **extra,
     )
 
 
-def rows(prefix: str, count: int, x: int, y: str, w: int, row_h: int, bar_color: str, value_w: int = 44) -> str:
-    """`y` is a Rainmeter formula for the first row's top (sections move as earlier ones grow or shrink)."""
+def claude_button(x: int, y: str, w: int) -> str:
+    return rounded_button("Claude", x, y, w, "What should I play?", '["#PythonW#" "#MainPy#" --inspire]',
+                          "#ButtonColor#", "#ButtonHoverColor#", "#ButtonTextColor#",
+                          tooltip="Copies a prompt about your library and opens claude.ai")
+
+
+def rows(prefix: str, count: int, x: int, y: str, w: int, row_h: int, bar_color: str, value_w: int = 44,
+         uninstall: bool = False) -> str:
+    """`y` is a Rainmeter formula for the first row's top (sections move as earlier ones grow or shrink).
+    Each row ends with a near-transparent hit area on top: click launches, right-click (dusty) uninstalls."""
     out = []
     sub_w = 64
     for i in range(1, count + 1):
@@ -142,7 +161,7 @@ def rows(prefix: str, count: int, x: int, y: str, w: int, row_h: int, bar_color:
         hidden = f"#{prefix}{i}Hidden#"
         out.append(section(
             f"{prefix}{i}Name", Meter="String", MeterStyle="sName", X=x, Y=ry, W=w - value_w - sub_w - 6,
-            Text=f"#{prefix}{i}Name#", ToolTipText=f"#{prefix}{i}Name#", Hidden=hidden,
+            Text=f"#{prefix}{i}Name#", Hidden=hidden,
         ))
         out.append(section(
             f"{prefix}{i}Sub", Meter="String", MeterStyle="sMuted", X=x + w - value_w - 4, Y=f"({ry}+2)",
@@ -154,13 +173,26 @@ def rows(prefix: str, count: int, x: int, y: str, w: int, row_h: int, bar_color:
         ))
         out.append(section(
             f"{prefix}{i}Bar", Meter="Shape", X=x, Y=f"({ry}+20)", Hidden=hidden,
-            Shape=f"Rectangle 0,0,{w},2,1 | Fill Color #Track# | StrokeWidth 0",
+            Shape=f"Rectangle 0,0,{w},2,1 | Fill Color #BarTrackColor#,#BarTrackOpacity# | StrokeWidth 0",
             Shape2=f"Rectangle 0,0,({w}*#{prefix}{i}Pct#),2,1 | Fill Color {bar_color} | StrokeWidth 0",
+        ))
+        hit = f"{prefix}{i}Hit"
+        normal = f"Rectangle 0,0,{w + 12},{row_h - 2},5 | Fill Color 255,255,255,1 | StrokeWidth 0"
+        hover = f"Rectangle 0,0,{w + 12},{row_h - 2},5 | Fill Color #RowHoverColor#,#RowHoverOpacity# | StrokeWidth 0"
+        tip = "Click to play" + ("  /  right-click to uninstall" if uninstall else "")
+        out.append(section(
+            hit, Meter="Shape", X=x - 6, Y=f"({ry}-4)", Hidden=hidden, Shape=normal,
+            ToolTipTitle=f"#{prefix}{i}Name#", ToolTipText=tip,
+            MouseOverAction=f'[!SetOption {hit} Shape "{hover}"][!UpdateMeter {hit}][!Redraw]',
+            MouseLeaveAction=f'[!SetOption {hit} Shape "{normal}"][!UpdateMeter {hit}][!Redraw]',
+            LeftMouseUpAction=f'["#PythonW#" "#MainPy#" --launch "#{prefix}{i}Id#"]',
+            RightMouseUpAction=f'["#PythonW#" "#MainPy#" --uninstall "#{prefix}{i}Id#"]' if uninstall else None,
         ))
     return "\n".join(out)
 
 
-SECTIONS = (("R", "Last 2 weeks", "#Blue#"), ("M", "Most played", "#Blue#,150"), ("D", "Gathering dust", "#Amber#"))
+SECTIONS = (("R", "Last 2 weeks", "#RecentBarColor#"), ("M", "Most played", "#MostPlayedBarColor#,#MostPlayedBarOpacity#"),
+            ("D", "Gathering dust", "#DustBarColor#"))
 
 
 def panel() -> str:
@@ -180,25 +212,319 @@ def panel() -> str:
     out = [header("Panel", "Recent, most played and dusty games stacked in one dark panel.",
                   "; Layout (formulas, resolved where used)\n" + "\n".join(layout))]
     out.append(section("Background", Meter="Shape",
-                       Shape=f"Rectangle 0.5,0.5,{w - 1},(#PanelH#-1),12 | Fill Color #Bg# | StrokeWidth 1 | Stroke Color #Border#"))
-    out.append(section("Title", Meter="String", MeterStyle="sText", X=pad, Y=14, FontSize=11, FontWeight=700,
+                       Shape=f"Rectangle 0.5,0.5,{w - 1},(#PanelH#-1),12 | Fill Color #BackgroundColor#,#BackgroundOpacity# | StrokeWidth 1 | Stroke Color #BorderColor#,#BorderOpacity#"))
+    out.append(section("Title", Meter="String", MeterStyle="sText", X=pad, Y=14, FontFace="#TitleFont#", FontSize=11, FontWeight=700,
                        Text="Games"))
+    # Cog sits just right of the title (X=...R follows the title's width, whatever font is chosen)
+    out.append(section(
+        "Cog", Meter="String", MeterStyle="sText", X="4R", Y=15, FontFace="Segoe MDL2 Assets", FontSize=10,
+        FontColor="#MutedTextColor#", Padding="3,3,3,3", SolidColor="0,0,0,1", Text=COG, ToolTipText="Appearance",
+        MouseOverAction="[!SetOption Cog FontColor #TextColor#][!UpdateMeter Cog][!Redraw]",
+        MouseLeaveAction="[!SetOption Cog FontColor #MutedTextColor#][!UpdateMeter Cog][!Redraw]",
+        LeftMouseUpAction=(f'[!ToggleConfig "{SETTINGS_CONFIG}" "Settings.ini"]'
+                           f'[!Move [SettingsX] #CURRENTCONFIGY# "{SETTINGS_CONFIG}"]'),
+        DynamicVariables=1,
+    ))
+    # Where the settings skin opens: right of the panel, or left if that would run off the screen
+    out.append(section(
+        "SettingsX", Measure="Calc", DynamicVariables=1,
+        Formula=(f"((#CURRENTCONFIGX#+#CURRENTCONFIGWIDTH#+{SETTINGS_W + 20} > #VSCREENAREAX#+#VSCREENAREAWIDTH#)"
+                 f" ? (#CURRENTCONFIGX#-{SETTINGS_W + 10}) : (#CURRENTCONFIGX#+#CURRENTCONFIGWIDTH#+10))"),
+    ))
     out.append(section("Meta", Meter="String", MeterStyle="sMuted", X=w - pad, Y=18, StringAlign="Right",
                        Text=f"#Updated#  {DOT}  #GameCount# games"))
     out.append(section("Status", Meter="String", MeterStyle="sMuted", X=pad, Y=34, W=inner, ClipString=1,
-                       FontColor="#Warn#", Text="#Status#", ToolTipText="#Status#", Hidden="#StatusHidden#"))
+                       FontColor="#WarningColor#", Text="#Status#", ToolTipText="#Status#", Hidden="#StatusHidden#"))
     for prefix, label, color in SECTIONS:
         out.append(section(f"{prefix}Label", Meter="String", MeterStyle="sLabel", X=pad, Y=f"#{prefix}Top#",
                            Text=label, Hidden=f"#{prefix}None#"))
-        out.append(rows(prefix, per, pad, f"#{prefix}Top#+20", inner, row_h, color))
-    out.append(claude_button(pad, "#BtnY#", inner, btn_h, "What should I play?"))
+        out.append(rows(prefix, per, pad, f"#{prefix}Top#+20", inner, row_h, color, uninstall=prefix == "D"))
+    out.append(claude_button(pad, "#BtnY#", inner))
     return "\n".join(out)
+
+
+# --------------------------------------------------------------------------- settings skin
+
+SETTINGS_HEADER = f"""; GENERATED by rainmeter/build_skins.py - edit that, not this file.
+; Appearance settings for the panel. Opened and closed by the cog next to the panel's title.
+[Rainmeter]
+Update=1000
+AccurateText=1
+
+[Metadata]
+Name=Game Widget - Appearance
+Author=benlaw7
+Information=Fonts, colours and opacity for the Game Widget panel. Changes apply to the panel straight away.
+Version=0.1
+License=MIT
+
+[Variables]
+@Include=#@#Style.inc
+@Include2=#@#Settings.inc
+ActiveSetting=BackgroundColor
+ActiveLabel=Background
+FontTarget=Font
+FontInputY=0
+{{pct_defaults}}
+
+[Script]
+Measure=Script
+ScriptFile=#@#Settings.lua
+"""
+
+DYN = {"DynamicVariables": 1}  # every settings meter follows the variables the script changes
+
+
+def _script(call: str) -> str:
+    return f'[!CommandMeasure Script "{call}"]'
+
+
+def _hover_text(name: str) -> dict:
+    return {
+        "MouseOverAction": f"[!SetOption {name} FontColor #TextColor#][!UpdateMeter {name}][!Redraw]",
+        "MouseLeaveAction": f"[!SetOption {name} FontColor #MutedTextColor#][!UpdateMeter {name}][!Redraw]",
+    }
+
+
+def _icon(name: str, x: int, y: int, glyph: str, action: str, align: str = "Left", size: int = 8,
+          tooltip: str | None = None) -> str:
+    return section(name, Meter="String", MeterStyle="sText", X=x, Y=y, StringAlign=align,
+                   FontFace="Segoe MDL2 Assets", FontSize=size, FontColor="#MutedTextColor#", Padding="4,4,4,4",
+                   SolidColor="0,0,0,1", Text=glyph, ToolTipText=tooltip, LeftMouseUpAction=action,
+                   **_hover_text(name), **DYN)
+
+
+def _slider(name: str, x: int, y: int, track: int) -> str:
+    """Click to set, scroll to nudge. Drawn like the panel's bars with a round handle."""
+    pos = f"({track}*#{name}#/255)"
+    return section(
+        f"{name}Slider", Meter="Shape", X=x, Y=y,
+        Shape=f"Rectangle 0,0,{track + 12},18 | Fill Color 0,0,0,1 | StrokeWidth 0",
+        Shape2=f"Rectangle 6,7,{track},4,2 | Fill Color #TextColor#,36 | StrokeWidth 0",
+        Shape3=f"Rectangle 6,7,{pos},4,2 | Fill Color #RecentBarColor# | StrokeWidth 0",
+        Shape4=f"Ellipse (6+{pos}),9,6 | Fill Color #RecentBarColor# | StrokeWidth 0",
+        ToolTipText="Click to set, scroll to fine-tune",
+        LeftMouseUpAction=_script(f"SetFromPixel('{name}', $MouseX$, {track})"),
+        MouseScrollUpAction=_script(f"Nudge('{name}', 5)"),
+        MouseScrollDownAction=_script(f"Nudge('{name}', -5)"),
+        **DYN,
+    ) + "\n" + section(f"{name}Pct", Meter="String", MeterStyle="sMuted", X=SETTINGS_W - 16, Y=y + 2,
+                       StringAlign="Right", Text=f"#{name}Pct#%", **DYN)
+
+
+def _setting_row(name: str, label: str, opacity: str | None, y: int) -> list[str]:
+    w, value_x = SETTINGS_W, 150
+    out = []
+    is_color = name.endswith("Color")
+    if is_color:  # highlight for the row the palette is editing
+        out.append(section(f"{name}Mark", Meter="Shape", X=8, Y=y - 3, Group="Marks",
+                           Hidden=0 if name == "BackgroundColor" else 1,
+                           Shape=f"Rectangle 0,0,{w - 16},26,5 | Fill Color #TextColor#,16 | StrokeWidth 0", **DYN))
+    out.append(section(f"{name}Text", Meter="String", MeterStyle="sText", X=16, Y=y + 2, FontSize=9, Text=label, **DYN))
+    if name.endswith("Font"):
+        out.append(_icon(f"{name}Prev", value_x - 4, y, LEFT, _script(f"Cycle('{name}', -1)"), tooltip="Previous font"))
+        open_input = (f"[!SetVariable FontTarget {name}][!SetVariable FontInputY {y}][!UpdateMeasure InputFont]"
+                      f"[!CommandMeasure InputFont \"ExecuteBatch 1\"]")
+        out.append(section(f"{name}Value", Meter="String", MeterStyle="sText", X=(value_x + w - 16) // 2, Y=y + 2,
+                           W=w - 16 - value_x - 36, ClipString=1, StringAlign="Center", FontFace=f"#{name}#",
+                           FontSize=9, Text=f"#{name}#", SolidColor="0,0,0,1",
+                           ToolTipText="Click to type any installed font", LeftMouseUpAction=open_input, **DYN))
+        out.append(_icon(f"{name}Next", w - 16 + 4, y, RIGHT, _script(f"Cycle('{name}', 1)"), align="Right",
+                         tooltip="Next font"))
+    elif is_color:
+        select = _script(f"Select('{name}', '{label}')")
+        out.append(section(f"{name}Swatch", Meter="Shape", X=value_x, Y=y + 1,
+                           Shape=f"Rectangle 0,0,34,18,4 | Fill Color #{name}# | StrokeWidth 1 | Stroke Color #TextColor#,50",
+                           **DYN))
+        out.append(section(f"{name}Hit", Meter="Shape", X=8, Y=y - 3,
+                           Shape=f"Rectangle 0,0,{value_x + 34 - 8 + 6},26 | Fill Color 0,0,0,1 | StrokeWidth 0",
+                           ToolTipText="Click, then pick a colour below", LeftMouseUpAction=select, **DYN))
+        if opacity:
+            out.append(_slider(opacity, value_x + 44, y, w - 16 - 40 - (value_x + 44) - 12))
+    else:  # a plain opacity row
+        out.append(_slider(name, value_x - 6, y, w - 16 - 40 - value_x - 6))
+    return out
+
+
+def settings_skin() -> str:
+    w, pad = SETTINGS_W, 16
+    out: list[str] = []
+    y = 50
+    for heading, items in GROUPS:
+        out.append(section(f"Heading{heading}", Meter="String", MeterStyle="sLabel", X=pad, Y=y, Text=heading, **DYN))
+        y += 20
+        for name, label, opacity in items:
+            out += _setting_row(name, label, opacity, y)
+            y += 26
+        y += 8
+
+    # palette for the selected colour row
+    out.append(section("PaletteHeading", Meter="String", MeterStyle="sLabel", X=pad, Y=y,
+                       Text="Colour for: #ActiveLabel#", **DYN))
+    y += 20
+    per_row, cell = 9, (w - 2 * pad) // 9
+    for i, color in enumerate(PALETTE):
+        row, col = divmod(i, per_row)
+        out.append(section(f"Dot{i}", Meter="Shape", X=pad + col * cell, Y=y + row * cell,
+                           Shape=f"Ellipse 12,12,10 | Fill Color {color} | StrokeWidth 1 | Stroke Color #TextColor#,50",
+                           ToolTipText=color, LeftMouseUpAction=_script(f"Pick('{color}')"), **DYN))
+    y += cell * ((len(PALETTE) + per_row - 1) // per_row) + 4
+    custom_y = y
+    out.append(section("Custom", Meter="String", MeterStyle="sMuted", X=pad, Y=y, FontSize=9,
+                       Text="Custom colour (R,G,B or #hex)...", SolidColor="0,0,0,1",
+                       LeftMouseUpAction='[!UpdateMeasure InputColor][!CommandMeasure InputColor "ExecuteBatch 1"]',
+                       **_hover_text("Custom"), **DYN))
+    y += 34
+
+    # buttons, shaped like the panel's Claude button
+    plain, plain_hover = "#TextColor#,22", "#TextColor#,40"
+    gap, done_w, cancel_w = 8, 88, 72
+    reset_w = w - 2 * pad - done_w - cancel_w - 2 * gap
+    out.append(rounded_button("Reset", pad, y, reset_w, "Reset to defaults", _script("Reset()"), plain, plain_hover,
+                              "#TextColor#", **DYN))
+    out.append(rounded_button("Cancel", pad + reset_w + gap, y, cancel_w, "Cancel", _script("Cancel()"), plain,
+                              plain_hover, "#TextColor#", tooltip="Undo everything since this opened", **DYN))
+    out.append(rounded_button("Done", w - pad - done_w, y, done_w, "Done", _script("Done()"), "#ButtonColor#",
+                              "#ButtonHoverColor#", "#ButtonTextColor#", **DYN))
+    height = y + BUTTON_H + pad
+
+    head = [
+        section("Background", Meter="Shape",
+                Shape=f"Rectangle 0.5,0.5,{w - 1},{height - 1},12 | Fill Color #BackgroundColor#,#BackgroundOpacity# | "
+                      f"StrokeWidth 1 | Stroke Color #BorderColor#,#BorderOpacity#", **DYN),
+        section("Title", Meter="String", MeterStyle="sText", X=pad, Y=14, FontFace="#TitleFont#", FontSize=11,
+                FontWeight=700, Text="Appearance", **DYN),
+        _icon("Close", w - pad + 4, 12, CLOSE, _script("Done()"), align="Right", size=9, tooltip="Close"),
+    ]
+    inputs = [
+        section("InputFont", Measure="Plugin", Plugin="InputText", X=150 + 14, Y="(#FontInputY#-1)",
+                W=w - 16 - 150 - 28, H=22, SolidColor="#BackgroundColor#", FontColor="#TextColor#", FontFace="#Font#",
+                FontSize=9, DefaultValue="[#[#FontTarget]]",
+                Command1=_script("Set('#FontTarget#', '$UserInput$')"), **DYN),
+        section("InputColor", Measure="Plugin", Plugin="InputText", X=pad, Y=custom_y - 3, W=w - 2 * pad, H=22,
+                SolidColor="#BackgroundColor#", FontColor="#TextColor#", FontFace="#Font#", FontSize=9,
+                DefaultValue="[#[#ActiveSetting]]", Command1=_script("Pick('$UserInput$')"), **DYN),
+    ]
+    pct_defaults = "\n".join(f"{name}Pct=0" for name, _, _ in APPEARANCE if name.endswith("Opacity"))
+    return "\n".join([SETTINGS_HEADER.format(pct_defaults=pct_defaults)] + inputs + head + out)
+
+
+def settings_lua() -> str:
+    defaults = ",\n".join(f"  {{'{name}', '{value}'}}" for name, value, _ in APPEARANCE)
+    fonts = ", ".join(f"'{f}'" for f in FONTS)
+    return f"""-- GENERATED by rainmeter/build_skins.py - edit that, not this file.
+-- Applies appearance changes: updates this skin live, saves to Settings.inc and refreshes the panel.
+
+DEFAULTS = {{
+{defaults}
+}}
+FONTS = {{ {fonts} }}
+
+function Initialize()
+  file = SKIN:GetVariable('@') .. 'Settings.inc'
+  snapshot = {{}}  -- values when the skin opened, for Cancel
+  for _, kv in ipairs(DEFAULTS) do
+    snapshot[kv[1]] = SKIN:GetVariable(kv[1])
+    if kv[1]:find('Opacity$') then setPct(kv[1]) end
+  end
+end
+
+local function trim(s) return (tostring(s):gsub('^%s+', ''):gsub('%s+$', '')) end
+
+local function clean(name, value)
+  value = trim(value)
+  if name:find('Color$') then
+    local hex = value:match('^#?(%x%x%x%x%x%x)$')
+    if hex then
+      return tonumber(hex:sub(1, 2), 16) .. ',' .. tonumber(hex:sub(3, 4), 16) .. ',' .. tonumber(hex:sub(5, 6), 16)
+    end
+    local r, g, b = value:match('^(%d+)%s*,%s*(%d+)%s*,%s*(%d+)$')
+    if r and tonumber(r) <= 255 and tonumber(g) <= 255 and tonumber(b) <= 255 then return r .. ',' .. g .. ',' .. b end
+    return nil
+  elseif name:find('Opacity$') then
+    local n = tonumber(value)
+    if not n then return nil end
+    return tostring(math.max(0, math.min(255, math.floor(n + 0.5))))
+  end
+  if value == '' then return nil end
+  return value
+end
+
+function setPct(name)
+  local v = tonumber(SKIN:GetVariable(name)) or 0
+  SKIN:Bang('!SetVariable', name .. 'Pct', tostring(math.floor(v / 2.55 + 0.5)))
+end
+
+local function apply(name, value)
+  SKIN:Bang('!SetVariable', name, value)
+  SKIN:Bang('!WriteKeyValue', 'Variables', name, value, file)
+  if name:find('Opacity$') then setPct(name) end
+end
+
+local function redraw()
+  SKIN:Bang('!Refresh', 'GameWidget\\\\Panel')
+  SKIN:Bang('!UpdateMeter', '*')
+  SKIN:Bang('!Redraw')
+end
+
+function Set(name, value)
+  local v = clean(name, value)
+  if v then apply(name, v); redraw() end
+end
+
+function SetFromPixel(name, x, width)
+  Set(name, math.max(0, math.min(1, (x - 6) / width)) * 255)
+end
+
+function Nudge(name, delta)
+  Set(name, (tonumber(SKIN:GetVariable(name)) or 0) + delta)
+end
+
+function Cycle(name, dir)
+  local current, index = (SKIN:GetVariable(name) or ''):lower(), 0
+  for i, f in ipairs(FONTS) do if f:lower() == current then index = i end end
+  if index == 0 and dir < 0 then index = 1 end
+  index = (index - 1 + dir) % #FONTS + 1
+  Set(name, FONTS[index])
+end
+
+function Select(name, label)
+  SKIN:Bang('!SetVariable', 'ActiveSetting', name)
+  SKIN:Bang('!SetVariable', 'ActiveLabel', label)
+  SKIN:Bang('!HideMeterGroup', 'Marks')
+  SKIN:Bang('!ShowMeter', name .. 'Mark')
+  SKIN:Bang('!UpdateMeter', '*')
+  SKIN:Bang('!Redraw')
+end
+
+function Pick(value)
+  Set(SKIN:GetVariable('ActiveSetting'), value)
+end
+
+function Reset()
+  for _, kv in ipairs(DEFAULTS) do apply(kv[1], kv[2]) end
+  redraw()
+end
+
+function Cancel()
+  for _, kv in ipairs(DEFAULTS) do apply(kv[1], snapshot[kv[1]]) end
+  SKIN:Bang('!Refresh', 'GameWidget\\\\Panel')
+  SKIN:Bang('!DeactivateConfig')
+end
+
+function Done()
+  SKIN:Bang('!DeactivateConfig')
+end
+"""
 
 
 def main() -> None:
     files = {
-        ROOT / "@Resources" / "Style.inc": STYLE.format(defaults=_defaults()),
+        ROOT / "@Resources" / "Style.inc": STYLE.format(appearance=render_settings(with_comments=False), defaults=_defaults()),
+        ROOT / "@Resources" / "Settings.default.inc": render_settings(),
         ROOT / "Panel" / "Panel.ini": panel(),
+        ROOT / "Settings" / "Settings.ini": settings_skin(),
+        ROOT / "@Resources" / "Settings.lua": settings_lua(),
     }
     for path, text in files.items():
         text.encode("ascii")  # see module docstring

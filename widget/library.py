@@ -52,6 +52,7 @@ def build_library(cfg: Config, store: Store) -> tuple[list[Game], list[str]]:
     others = (
         scanners.scan_epic()
         + scanners.scan_gog()
+        + scanners.scan_eagle_dynamics()
         + scanners.scan_xbox(cfg.xbox_games_roots)
         + scanners.scan_folders(cfg.extra_game_folders)
     )
@@ -74,5 +75,32 @@ def build_library(cfg: Config, store: Store) -> tuple[list[Game], list[str]]:
         game.recent_minutes = recent.get(game.id, 0)
         games[game.id] = game
 
+    stats = store.session_stats(cfg.min_session_seconds)
+    for game in games.values():
+        if game.id in stats:
+            game.avg_session_minutes = stats[game.id][1]
+        settings = cfg.game_settings(game.name)
+        game.vr = bool(settings.get("vr"))
+        extra = settings.get("extra_hours")
+        if extra:  # hours from before tracking (or another launcher), entered by hand in config.json
+            game.playtime_minutes += round(float(extra) * 60)
+
     hidden = {n.lower() for n in cfg.ignore_names}
     return [g for g in games.values() if g.name.lower() not in hidden], warnings
+
+
+def add_genres(games: list[Game], store: Store, max_lookups: int = 20) -> None:
+    """Fill Game.genres for Steam games from the cache, looking up at most `max_lookups` misses."""
+    lookups = 0
+    for game in games:
+        if game.source != "steam":
+            continue
+        cached = store.get_genres(game.id)
+        if cached is None and lookups < max_lookups:
+            lookups += 1
+            try:
+                cached = steam_api.genres(int(game.id.split(":", 1)[1]))
+            except steam_api.SteamError:
+                continue  # try again next refresh
+            store.set_genres(game.id, cached)
+        game.genres = cached or []
